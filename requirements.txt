@@ -1,1 +1,1 @@
-pyCraft>=0.7.0
+lodestone
