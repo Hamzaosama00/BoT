@@ -1,19 +1,18 @@
-from lodestone import Client, OfflineSession
 import asyncio
 import random
 import socket
 import time
+from mcproto import ClientBound, ServerBound, Connection
 
 SERVER_HOST = "TheUnexpectedSMP.aternos.me"
 SERVER_PORT = 40070
 USERNAME = "BoT"
 
 CHECK_INTERVAL = 5
-MOVE_INTERVAL = 8
+MOVE_INTERVAL = 7
 
 
-def server_online():
-    """TCP Check if server is online"""
+def is_online():
     try:
         s = socket.socket()
         s.settimeout(2)
@@ -24,49 +23,77 @@ def server_online():
         return False
 
 
-async def run_bot():
+async def bot_loop():
     while True:
-        print("Checking server status...")
-        if not server_online():
-            print("Server offline, rechecking...")
+        print("Checking server online status...")
+        if not is_online():
+            print("Server offline... waiting...")
             time.sleep(CHECK_INTERVAL)
             continue
 
-        print("✅ Server ONLINE — Joining...")
+        print("✅ Server ONLINE — attempting login...")
 
-        session = OfflineSession(USERNAME)
-        client = Client(session)
+        conn = Connection()
+        await conn.connect(SERVER_HOST, SERVER_PORT)
 
-        try:
-            await client.connect(SERVER_HOST, SERVER_PORT)
-            print("✅ Connected to SMP!")
+        # Offline mode login (cracked SMP)
+        conn.send(ServerBound.HandshakePacket(
+            protocol_version=763,
+            server_address=SERVER_HOST,
+            server_port=SERVER_PORT,
+            next_state=2  # login
+        ))
 
-            # Movement Loop
-            async def movement():
-                while client.connected:
-                    try:
-                        dx = random.uniform(-0.2, 0.2)
-                        dz = random.uniform(-0.2, 0.2)
+        conn.send(ServerBound.LoginStartPacket(
+            username=USERNAME
+        ))
 
-                        await client.position.move(dx, 0, dz)
-                        print(f"Moved tiny step dx={dx}, dz={dz}")
+        print("Logging in...")
 
-                        await asyncio.sleep(MOVE_INTERVAL)
-                    except:
-                        break
+        logged_in = False
+        x = y = z = 0
 
-            asyncio.create_task(movement())
+        while True:
+            try:
+                pkt = await conn.read_packet()
 
-            # Stay alive
-            while client.connected:
-                await asyncio.sleep(1)
+                # Join complete
+                if isinstance(pkt, ClientBound.JoinGamePacket):
+                    print("✅ Joined game world!")
+                    logged_in = True
 
-        except Exception as e:
-            print("❌ Error:", e)
+                # Set initial position
+                if isinstance(pkt, ClientBound.PlayerPositionAndLookPacket):
+                    x, y, z = pkt.x, pkt.y, pkt.z
+                    print("Spawned at:", x, y, z)
 
-        print("Disconnected. Reconnecting...")
-        time.sleep(5)
+                # KeepAlive response
+                if isinstance(pkt, ClientBound.KeepAlivePacket):
+                    conn.send(ServerBound.KeepAlivePacket(
+                        keep_alive_id=pkt.keep_alive_id
+                    ))
+
+                # Movement loop
+                if logged_in:
+                    dx = random.uniform(-0.2, 0.2)
+                    dz = random.uniform(-0.2, 0.2)
+                    x += dx
+                    z += dz
+
+                    conn.send(ServerBound.PlayerPositionPacket(
+                        x=x, y=y, z=z, on_ground=True
+                    ))
+
+                    print("Moved small step.")
+                    await asyncio.sleep(MOVE_INTERVAL)
+
+            except Exception as e:
+                print("❌ Disconnected:", e)
+                break
+
+        print("Reconnecting soon...")
+        time.sleep(3)
 
 
 if __name__ == "__main__":
-    asyncio.run(run_bot())
+    asyncio.run(bot_loop())
